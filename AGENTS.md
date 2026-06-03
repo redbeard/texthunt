@@ -30,6 +30,8 @@ Conventional Commits, concise, describing the **value added** — not a list of 
 
 Types: `feat`, `fix`, `refactor`, `test`, `chore`, `docs`.
 
+*CRITICAL*: Do not commit any secrets or keys.
+
 ## Tooling (uv — never pip)
 
 ```sh
