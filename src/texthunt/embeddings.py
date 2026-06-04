@@ -44,8 +44,8 @@ def build_luar_engine(model_name: str = DEFAULT_MODEL, device: str = "cpu") -> L
 
 @lru_cache(maxsize=2)
 def _luar_embedder(model_name: str, device: str) -> Embedder:
-    import torch  # ty: ignore[unresolved-import]
-    from transformers import AutoModel, AutoTokenizer  # ty: ignore[unresolved-import]
+    import torch
+    from transformers import AutoModel, AutoTokenizer
 
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
     model = AutoModel.from_pretrained(model_name, trust_remote_code=True).to(device).eval()

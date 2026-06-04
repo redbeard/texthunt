@@ -55,3 +55,8 @@ markers = ["slow: needs network/model downloads; deselected by default"]
 
 [tool.ty.environment]
 python-version = "3.11"
+
+[tool.ty.src]
+# Optional-dependency glue (torch/transformers/LUAR); behaviour is covered by stub-based unit tests,
+# and the deps are absent in a default `uv sync`, so static analysis here is noise either way.
+exclude = ["src/texthunt/embeddings.py"]
