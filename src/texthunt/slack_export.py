@@ -9,12 +9,16 @@ The exporter optimises for a *representative* corpus rather than a complete one:
 Two layers keep us under Slack's rate limits: an injected ``throttle`` that paces every request, and
 (in the real client) ``slack_sdk``'s retry handler that honours ``Retry-After`` on HTTP 429.
 
+Runs are **incremental**: an existing export in the output directory is loaded, counted toward the
+per-author target, and merged with the new fetch (deduplicated by timestamp). This lets coverage
+grow over many small runs that each stay comfortably within Slack's rate limits.
+
 The output directory matches the layout :func:`texthunt.ingest.load_messages` reads, so an export
 feeds straight into the rest of the pipeline.
 """
 
 import json
-from collections import Counter
+from collections import Counter, defaultdict
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -90,11 +94,15 @@ def export(
     max_channels: int | None = None,
     include_threads: bool = True,
 ) -> ExportSummary:
-    """Export from an explicit (or capped) set of channels, balancing per author within each."""
+    """Export from an explicit (or capped) set of channels, balancing per author within each.
+
+    Incremental: messages already in ``out_dir`` are merged with the new fetch (deduplicated by
+    timestamp), so repeated runs widen coverage instead of overwriting it.
+    """
     windows = time_windows(start, end, n_windows)
     channels = _select_channels(client, throttle, channel_names, max_channels)
 
-    by_channel: dict[str, list[dict]] = {}
+    fetched: dict[str, list[dict]] = {}
     skipped = 0
     for channel in channels:
         try:
@@ -104,12 +112,16 @@ def export(
         except Exception:  # an unreadable channel (archived, restricted) shouldn't end the run
             skipped += 1
             continue
-        balanced = balance_by_author([m for m in raw if is_human_message(m)], max_per_author)
-        if balanced:
-            by_channel[channel.name] = balanced
+        fetched[channel.name] = [m for m in raw if is_human_message(m)]
 
-    _write(out_dir, by_channel)
-    return _summarise(by_channel, skipped)
+    merged = _merge(load_existing(out_dir), fetched)
+    balanced = {
+        name: kept
+        for name, messages in merged.items()
+        if (kept := balance_by_author(messages, max_per_author))
+    }
+    _write(out_dir, balanced)
+    return _summarise(balanced, skipped)
 
 
 def export_balanced(
@@ -136,8 +148,12 @@ def export_balanced(
     windows = time_windows(start, end, n_windows)
     channels = _ranked_member_channels(client, throttle)
 
-    by_channel: dict[str, list[dict]] = {}
-    counts: Counter[str] = Counter()
+    existing = load_existing(out_dir)
+    counts, seen = _existing_coverage(
+        existing
+    )  # already-collected messages count toward the target
+
+    fresh: dict[str, list[dict]] = {}
     skipped = 0
     for channel in channels[:max_channels]:
         try:
@@ -148,19 +164,22 @@ def export_balanced(
             skipped += 1
             continue
         for message in raw:
-            author = message.get("user", "")
-            if is_human_message(message) and counts[author] < target_per_author:
-                by_channel.setdefault(channel.name, []).append(message)
+            author, ts = message.get("user", ""), _ts(message)
+            if not is_human_message(message) or ts in seen[channel.name]:
+                continue
+            if counts[author] < target_per_author:
+                fresh.setdefault(channel.name, []).append(message)
+                seen[channel.name].add(ts)
                 counts[author] += 1
         if _everyone_saturated(counts, floor_per_author, target_per_author):
             break
 
-    retained = _drop_thin_authors(by_channel, counts, floor_per_author)
+    merged = _merge(existing, _drop_thin_authors(fresh, counts, floor_per_author))
     dropped = tuple(
         sorted(author for author, count in counts.items() if 0 < count < floor_per_author)
     )
-    _write(out_dir, retained)
-    return _summarise(retained, skipped, dropped)
+    _write(out_dir, merged)
+    return _summarise(merged, skipped, dropped)
 
 
 def _channel_history(
@@ -249,6 +268,48 @@ def _paginate(
             break
         cursor = page.next_cursor
     return items if max_items is None else items[:max_items]
+
+
+def load_existing(out_dir: Path) -> dict[str, list[dict]]:
+    """Read a previous export back into ``{channel_name: messages}`` (empty when none exists)."""
+    if not out_dir.exists():
+        return {}
+    existing: dict[str, list[dict]] = {}
+    for channel_dir in sorted(p for p in out_dir.iterdir() if p.is_dir()):
+        export_file = channel_dir / "export.json"
+        if export_file.is_file():
+            existing[channel_dir.name] = json.loads(export_file.read_text())
+    return existing
+
+
+def _ts(message: dict) -> str:
+    """The message timestamp — unique within a channel, so it serves as the dedup key."""
+    return str(message.get("ts"))
+
+
+def _existing_coverage(
+    existing: dict[str, list[dict]],
+) -> tuple[Counter[str], dict[str, set[str]]]:
+    counts: Counter[str] = Counter()
+    seen: dict[str, set[str]] = defaultdict(set)
+    for channel_name, messages in existing.items():
+        for message in messages:
+            counts[message.get("user", "")] += 1
+            seen[channel_name].add(_ts(message))
+    return counts, seen
+
+
+def _merge(existing: dict[str, list[dict]], new: dict[str, list[dict]]) -> dict[str, list[dict]]:
+    """Combine two ``{channel: messages}`` maps, skipping messages whose ts is already present."""
+    merged = {name: list(messages) for name, messages in existing.items()}
+    for name, messages in new.items():
+        seen = {_ts(m) for m in merged.get(name, [])}
+        bucket = merged.setdefault(name, [])
+        for message in messages:
+            if _ts(message) not in seen:
+                bucket.append(message)
+                seen.add(_ts(message))
+    return merged
 
 
 def _write(out_dir: Path, by_channel: dict[str, list[dict]]) -> None:

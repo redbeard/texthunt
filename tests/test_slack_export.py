@@ -8,6 +8,7 @@ from texthunt.slack_export import (
     balance_by_author,
     export,
     export_balanced,
+    load_existing,
     time_windows,
 )
 
@@ -57,7 +58,12 @@ def _message(user: str, ts: float, text: str = "a real human sentence") -> dict:
 
 
 def _fake_client() -> FakeSlackClient:
-    general = [_message(user, ts) for ts in (10, 35, 60, 85) for user in ("u1", "u2")]
+    # Slack timestamps uniquely identify a message, so keep them distinct (offset per author).
+    general = [
+        _message(user, ts + 0.1 * i)
+        for ts in (10, 35, 60, 85)
+        for i, user in enumerate(("u1", "u2"))
+    ]
     general += [_message("u1", 11), _message("u1", 12)]  # u1 is chatty
     general.append({"type": "message", "subtype": "bot_message", "ts": "40", "text": "deploy ok"})
     random = [_message("u3", ts) for ts in (20, 70)]
@@ -323,3 +329,79 @@ def test_export_balanced_scans_channels_most_active_first(tmp_path: Path):
     )
 
     assert client.history_queries[0][0] == "C_big"  # largest channel scanned first
+
+
+def test_load_existing_round_trips_written_channels(tmp_path: Path):
+    client = FakeSlackClient(
+        channels=[Channel("C1", "general")], messages={"C1": [_message("u1", 10)]}
+    )
+    export(
+        client,
+        tmp_path,
+        start=0.0,
+        end=100.0,
+        n_windows=1,
+        max_per_author=10,
+        max_messages_per_window=100,
+        throttle=lambda: None,
+        include_threads=False,
+    )
+
+    existing = load_existing(tmp_path)
+
+    assert list(existing) == ["general"]
+    assert existing["general"][0]["user"] == "u1"
+
+
+def test_load_existing_is_empty_for_a_missing_directory(tmp_path: Path):
+    assert load_existing(tmp_path / "nope") == {}
+
+
+def _balanced(client: FakeSlackClient, out_dir: Path) -> object:
+    return export_balanced(
+        client,
+        out_dir,
+        start=-1.0,
+        end=200.0,
+        n_windows=1,
+        target_per_author=100,
+        floor_per_author=1,
+        max_messages_per_window=1000,
+        throttle=lambda: None,
+        include_threads=False,
+    )
+
+
+def test_export_balanced_is_incremental_counts_existing_and_dedupes(tmp_path: Path):
+    first = FakeSlackClient(
+        channels=[Channel("C1", "general", num_members=10)],
+        messages={"C1": [_message("rich", ts) for ts in range(0, 60)]},
+    )
+    _balanced(first, tmp_path)
+    assert len(load_existing(tmp_path)["general"]) == 60
+
+    # A later run sees the same 60 messages plus 60 newer ones.
+    second = FakeSlackClient(
+        channels=[Channel("C1", "general", num_members=10)],
+        messages={"C1": [_message("rich", ts) for ts in range(0, 120)]},
+    )
+    _balanced(second, tmp_path)
+
+    messages = load_messages(tmp_path)
+    timestamps = [m.timestamp for m in messages]
+    assert len(messages) == 100  # topped up from 60 to the target, not restarted
+    assert len(timestamps) == len(set(timestamps))  # no duplicates across runs
+
+
+def test_export_preserves_channels_from_earlier_runs(tmp_path: Path):
+    first = FakeSlackClient(
+        channels=[Channel("C1", "general")], messages={"C1": [_message("u1", 10)]}
+    )
+    _balanced(first, tmp_path)
+
+    second = FakeSlackClient(
+        channels=[Channel("C2", "random", num_members=5)], messages={"C2": [_message("u2", 10)]}
+    )
+    _balanced(second, tmp_path)
+
+    assert {b.channel for b in load_messages(tmp_path)} == {"general", "random"}
