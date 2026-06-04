@@ -44,6 +44,9 @@ uv run ty check        # type check
 
 Add deps with `uv add` / `uv add --dev`. Commit `uv.lock`.
 
+Put throwaway scripts and scratch output in `./tmp` (gitignored), never `/tmp` — keeping them inside
+the repo avoids sandbox permission prompts.
+
 ## Data & privacy
 
 - Slack messages are personal data. Everything under `data/` is gitignored — never commit raw

@@ -12,6 +12,10 @@ wheels/
 # Data — personal Slack messages, never commit
 data/
 
+# Scratch space for throwaway scripts (the directory is kept, its contents ignored)
+tmp/*
+!tmp/.gitkeep
+
 # Caches
 .pytest_cache/
 .ruff_cache/
