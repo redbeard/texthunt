@@ -381,6 +381,42 @@ def test_export_balanced_reports_progress_and_early_stop(tmp_path: Path):
     assert not any("small" in line for line in lines)  # stopped before scanning the small channel
 
 
+def test_export_balanced_checkpoints_after_each_channel(tmp_path: Path, monkeypatch):
+    import texthunt.slack_export as se
+
+    sizes: list[int] = []
+    real_write = se._write
+
+    def spy(out_dir, by_channel):
+        sizes.append(sum(len(messages) for messages in by_channel.values()))
+        real_write(out_dir, by_channel)
+
+    monkeypatch.setattr(se, "_write", spy)
+    client = FakeSlackClient(
+        channels=[Channel("C1", "a", num_members=10), Channel("C2", "b", num_members=5)],
+        messages={
+            "C1": [_message("u1", ts) for ts in range(0, 5)],
+            "C2": [_message("u2", ts) for ts in range(5, 10)],
+        },
+    )
+
+    export_balanced(
+        client,
+        tmp_path,
+        start=-1.0,
+        end=100.0,
+        n_windows=1,
+        target_per_author=1000,  # high target so both channels are scanned
+        floor_per_author=1,
+        max_messages_per_window=1000,
+        throttle=lambda: None,
+        include_threads=False,
+    )
+
+    assert sizes[0] == 5  # checkpointed after the first channel
+    assert sizes[-1] == 10  # everything persisted by the end
+
+
 def test_load_existing_round_trips_written_channels(tmp_path: Path):
     client = FakeSlackClient(
         channels=[Channel("C1", "general")], messages={"C1": [_message("u1", 10)]}

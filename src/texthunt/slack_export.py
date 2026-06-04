@@ -185,6 +185,7 @@ def export_balanced(
                 fresh.setdefault(channel.name, []).append(message)
                 seen[channel.name].add(ts)
                 counts[author] += 1
+        _write(out_dir, _merge(existing, fresh))  # checkpoint so a long run survives interruption
         added = len(fresh.get(channel.name, []))
         at_target = sum(1 for count in counts.values() if count >= target_per_author)
         progress(
