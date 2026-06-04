@@ -18,7 +18,7 @@ from texthunt.engine import Engine
 from texthunt.evaluate import author_disjoint_split, evaluate_engine, topic_aware_split
 from texthunt.features import build_stylometric_engine
 from texthunt.pipeline import DEFAULT_MIN_CHARS, load_blocks, train_identifier
-from texthunt.slack_export import Throttle, build_slack_client, export
+from texthunt.slack_export import Throttle, build_slack_client, export, export_balanced
 from texthunt.verify import Verdict
 
 SECONDS_PER_DAY = 86_400
@@ -51,6 +51,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     export_cmd.add_argument(
         "--max-channels", type=int, help="cap how many channels are scanned (a safety limit)"
+    )
+    export_cmd.add_argument(
+        "--min-per-author",
+        type=int,
+        help="auto-expand the busiest joined channels until each author reaches this many messages",
+    )
+    export_cmd.add_argument(
+        "--floor", type=int, default=20, help="drop authors with fewer than this many messages"
+    )
+    export_cmd.add_argument(
+        "--threads",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="fetch thread replies (--no-threads to skip)",
     )
     export_cmd.add_argument(
         "--delay",
@@ -102,22 +116,39 @@ def _run_export(args: argparse.Namespace) -> int:
     token = load_settings().slack_token.get_secret_value()
     client = build_slack_client(token)
     now = time.time()
-    summary = export(
-        client,
-        args.out,
-        start=now - args.days * SECONDS_PER_DAY,
-        end=now,
-        n_windows=args.windows,
-        max_per_author=args.max_per_author,
-        max_messages_per_window=args.max_per_window,
-        throttle=_sleeper(args.delay),
-        channel_names=args.channels,
-        max_channels=args.max_channels,
-    )
+    common = {
+        "start": now - args.days * SECONDS_PER_DAY,
+        "end": now,
+        "n_windows": args.windows,
+        "max_messages_per_window": args.max_per_window,
+        "throttle": _sleeper(args.delay),
+        "include_threads": args.threads,
+        "max_channels": args.max_channels,
+    }
+    if args.min_per_author:
+        summary = export_balanced(
+            client,
+            args.out,
+            target_per_author=args.min_per_author,
+            floor_per_author=args.floor,
+            **common,
+        )
+    else:
+        summary = export(
+            client,
+            args.out,
+            max_per_author=args.max_per_author,
+            channel_names=args.channels,
+            **common,
+        )
+
     print(f"exported {summary.n_messages} messages")
     print(f"from {summary.n_authors} authors across {summary.n_channels} channels -> {args.out}")
     if summary.n_skipped:
         print(f"skipped {summary.n_skipped} unreadable channels")
+    if summary.dropped_authors:
+        print(f"dropped {len(summary.dropped_authors)} authors below the floor of {args.floor}:")
+        print("  " + ", ".join(summary.dropped_authors))
     return 0
 
 

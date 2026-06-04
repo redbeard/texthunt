@@ -1,3 +1,4 @@
+from collections import Counter
 from pathlib import Path
 
 from texthunt.ingest import load_messages
@@ -6,6 +7,7 @@ from texthunt.slack_export import (
     Page,
     balance_by_author,
     export,
+    export_balanced,
     time_windows,
 )
 
@@ -25,11 +27,17 @@ def test_balance_by_author_caps_each_person_but_keeps_others():
 
 
 class FakeSlackClient:
-    """An in-memory Slack stand-in: serves canned channels and time-filtered history."""
+    """An in-memory Slack stand-in: serves canned channels, time-filtered history, and threads."""
 
-    def __init__(self, channels: list[Channel], messages: dict[str, list[dict]]) -> None:
+    def __init__(
+        self,
+        channels: list[Channel],
+        messages: dict[str, list[dict]],
+        replies: dict[tuple[str, str], list[dict]] | None = None,
+    ) -> None:
         self._channels = channels
         self._messages = messages
+        self._replies = replies or {}
         self.history_queries: list[tuple[str, float, float]] = []
 
     def list_channels(self, cursor: str | None) -> Page:
@@ -39,6 +47,9 @@ class FakeSlackClient:
         self.history_queries.append((channel_id, oldest, latest))
         within = [m for m in self._messages[channel_id] if oldest <= float(m["ts"]) < latest]
         return Page(items=within, next_cursor=None)
+
+    def replies(self, channel_id: str, thread_ts: str, cursor: str | None) -> Page:
+        return Page(items=list(self._replies.get((channel_id, thread_ts), [])), next_cursor=None)
 
 
 def _message(user: str, ts: float, text: str = "a real human sentence") -> dict:
@@ -200,3 +211,115 @@ def test_export_queries_every_window_and_throttles_between_calls(tmp_path: Path)
     assert len(calls) >= len(client.history_queries)  # throttled at least once per call
     assert summary.n_channels == 2
     assert summary.n_authors == 3
+
+
+def test_export_includes_thread_replies_when_enabled(tmp_path: Path):
+    parent = {"type": "message", "user": "u1", "ts": "10", "text": "question?", "reply_count": 2}
+    reply1 = {"type": "message", "user": "u2", "ts": "11", "text": "one answer", "thread_ts": "10"}
+    reply2 = {"type": "message", "user": "u3", "ts": "12", "text": "another", "thread_ts": "10"}
+    client = FakeSlackClient(
+        channels=[Channel("C1", "general")],
+        messages={"C1": [parent]},
+        replies={("C1", "10"): [parent, reply1, reply2]},
+    )
+
+    export(
+        client,
+        tmp_path,
+        start=0.0,
+        end=100.0,
+        n_windows=1,
+        max_per_author=10,
+        max_messages_per_window=100,
+        throttle=lambda: None,
+        include_threads=True,
+    )
+
+    assert {m.author_id for m in load_messages(tmp_path)} == {"u1", "u2", "u3"}
+
+
+def test_export_omits_thread_replies_when_disabled(tmp_path: Path):
+    parent = {"type": "message", "user": "u1", "ts": "10", "text": "question?", "reply_count": 1}
+    reply = {"type": "message", "user": "u2", "ts": "11", "text": "an answer", "thread_ts": "10"}
+    client = FakeSlackClient(
+        channels=[Channel("C1", "general")],
+        messages={"C1": [parent]},
+        replies={("C1", "10"): [parent, reply]},
+    )
+
+    export(
+        client,
+        tmp_path,
+        start=0.0,
+        end=100.0,
+        n_windows=1,
+        max_per_author=10,
+        max_messages_per_window=100,
+        throttle=lambda: None,
+        include_threads=False,
+    )
+
+    assert {m.author_id for m in load_messages(tmp_path)} == {"u1"}
+
+
+def test_export_balanced_fills_to_target_drops_thin_authors_and_stops_early(tmp_path: Path):
+    busy = [_message("rich", ts) for ts in range(0, 60)]
+    more_busy = [_message("rich", ts) for ts in range(0, 60)]
+    client = FakeSlackClient(
+        channels=[
+            Channel("C1", "big", num_members=100),
+            Channel("C2", "mid", num_members=50),
+            Channel("C3", "small", num_members=10),
+        ],
+        messages={
+            "C1": busy + [_message("thin", ts) for ts in range(60, 65)],
+            "C2": more_busy,
+            "C3": [_message("never_scanned", 1)],
+        },
+    )
+
+    summary = export_balanced(
+        client,
+        tmp_path,
+        start=-1.0,
+        end=100.0,
+        n_windows=1,
+        target_per_author=100,
+        floor_per_author=20,
+        max_messages_per_window=1000,
+        throttle=lambda: None,
+        include_threads=False,
+    )
+
+    counts = Counter(m.author_id for m in load_messages(tmp_path))
+    assert counts["rich"] == 100  # capped at target, accumulated across two channels
+    assert "thin" not in counts  # below the floor, dropped
+    assert "never_scanned" not in counts  # C3 never scanned: target met after C2
+    assert summary.n_authors == 1
+    assert summary.dropped_authors == ("thin",)  # a dropped author is always reported
+
+
+def test_export_balanced_scans_channels_most_active_first(tmp_path: Path):
+    client = FakeSlackClient(
+        channels=[
+            Channel("C_small", "small", num_members=5),
+            Channel("C_big", "big", num_members=500),
+        ],
+        messages={"C_small": [_message("u1", 10)], "C_big": [_message("u2", 10)]},
+    )
+
+    export_balanced(
+        client,
+        tmp_path,
+        start=0.0,
+        end=100.0,
+        n_windows=1,
+        target_per_author=100,
+        floor_per_author=1,
+        max_messages_per_window=100,
+        throttle=lambda: None,
+        include_threads=False,
+        max_channels=1,
+    )
+
+    assert client.history_queries[0][0] == "C_big"  # largest channel scanned first
