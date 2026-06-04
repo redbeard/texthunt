@@ -8,6 +8,7 @@ Subcommands:
 """
 
 import argparse
+import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -124,6 +125,7 @@ def _run_export(args: argparse.Namespace) -> int:
         "throttle": _sleeper(args.delay),
         "include_threads": args.threads,
         "max_channels": args.max_channels,
+        "progress": _stderr_progress,
     }
     if args.min_per_author:
         summary = export_balanced(
@@ -154,6 +156,10 @@ def _run_export(args: argparse.Namespace) -> int:
 
 def _sleeper(delay: float) -> Throttle:
     return (lambda: time.sleep(delay)) if delay > 0 else (lambda: None)
+
+
+def _stderr_progress(message: str) -> None:
+    print(message, file=sys.stderr, flush=True)
 
 
 def _run_evaluate(args: argparse.Namespace) -> int:

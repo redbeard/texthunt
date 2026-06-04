@@ -331,6 +331,56 @@ def test_export_balanced_scans_channels_most_active_first(tmp_path: Path):
     assert client.history_queries[0][0] == "C_big"  # largest channel scanned first
 
 
+def test_export_reports_progress_per_channel(tmp_path: Path):
+    lines: list[str] = []
+    export(
+        _fake_client(),
+        tmp_path,
+        start=0.0,
+        end=100.0,
+        n_windows=1,
+        max_per_author=10,
+        max_messages_per_window=100,
+        throttle=lambda: None,
+        include_threads=False,
+        progress=lines.append,
+    )
+
+    assert any("general" in line for line in lines)
+    assert any("random" in line for line in lines)
+
+
+def test_export_balanced_reports_progress_and_early_stop(tmp_path: Path):
+    client = FakeSlackClient(
+        channels=[
+            Channel("C1", "big", num_members=100),
+            Channel("C2", "small", num_members=1),
+        ],
+        messages={
+            "C1": [_message("rich", ts) for ts in range(0, 60)],
+            "C2": [_message("other", 1)],
+        },
+    )
+    lines: list[str] = []
+
+    export_balanced(
+        client,
+        tmp_path,
+        start=-1.0,
+        end=100.0,
+        n_windows=1,
+        target_per_author=50,
+        floor_per_author=1,
+        max_messages_per_window=1000,
+        throttle=lambda: None,
+        include_threads=False,
+        progress=lines.append,
+    )
+
+    assert any("big" in line for line in lines)
+    assert not any("small" in line for line in lines)  # stopped before scanning the small channel
+
+
 def test_load_existing_round_trips_written_channels(tmp_path: Path):
     client = FakeSlackClient(
         channels=[Channel("C1", "general")], messages={"C1": [_message("u1", 10)]}

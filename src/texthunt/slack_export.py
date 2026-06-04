@@ -27,6 +27,11 @@ from typing import Any, Protocol
 from texthunt.ingest import is_human_message
 
 Throttle = Callable[[], None]
+Progress = Callable[[str], None]
+
+
+def _silent(_message: str) -> None:
+    """Default progress sink — reports nothing."""
 
 
 @dataclass(frozen=True)
@@ -93,6 +98,7 @@ def export(
     channel_names: Sequence[str] | None = None,
     max_channels: int | None = None,
     include_threads: bool = True,
+    progress: Progress = _silent,
 ) -> ExportSummary:
     """Export from an explicit (or capped) set of channels, balancing per author within each.
 
@@ -101,18 +107,23 @@ def export(
     """
     windows = time_windows(start, end, n_windows)
     channels = _select_channels(client, throttle, channel_names, max_channels)
+    progress(f"scanning {len(channels)} channels")
 
     fetched: dict[str, list[dict]] = {}
     skipped = 0
-    for channel in channels:
+    for index, channel in enumerate(channels, start=1):
         try:
             raw = _channel_history(
                 client, channel, windows, throttle, max_messages_per_window, include_threads
             )
         except Exception:  # an unreadable channel (archived, restricted) shouldn't end the run
             skipped += 1
+            progress(f"[{index}/{len(channels)}] #{channel.name}: skipped (unreadable)")
             continue
         fetched[channel.name] = [m for m in raw if is_human_message(m)]
+        progress(
+            f"[{index}/{len(channels)}] #{channel.name}: {len(fetched[channel.name])} messages"
+        )
 
     merged = _merge(load_existing(out_dir), fetched)
     balanced = {
@@ -137,6 +148,7 @@ def export_balanced(
     throttle: Throttle,
     include_threads: bool = True,
     max_channels: int | None = None,
+    progress: Progress = _silent,
 ) -> ExportSummary:
     """Scan joined channels (busiest first) until every retained author hits ``target_per_author``.
 
@@ -146,22 +158,24 @@ def export_balanced(
     never reach ``floor_per_author`` are dropped as too thin to profile.
     """
     windows = time_windows(start, end, n_windows)
-    channels = _ranked_member_channels(client, throttle)
+    channels = _ranked_member_channels(client, throttle)[:max_channels]
 
     existing = load_existing(out_dir)
     counts, seen = _existing_coverage(
         existing
     )  # already-collected messages count toward the target
+    progress(f"scanning up to {len(channels)} channels; {len(counts)} authors already covered")
 
     fresh: dict[str, list[dict]] = {}
     skipped = 0
-    for channel in channels[:max_channels]:
+    for index, channel in enumerate(channels, start=1):
         try:
             raw = _channel_history(
                 client, channel, windows, throttle, max_messages_per_window, include_threads
             )
         except Exception:
             skipped += 1
+            progress(f"[{index}/{len(channels)}] #{channel.name}: skipped (unreadable)")
             continue
         for message in raw:
             author, ts = message.get("user", ""), _ts(message)
@@ -171,7 +185,14 @@ def export_balanced(
                 fresh.setdefault(channel.name, []).append(message)
                 seen[channel.name].add(ts)
                 counts[author] += 1
+        added = len(fresh.get(channel.name, []))
+        at_target = sum(1 for count in counts.values() if count >= target_per_author)
+        progress(
+            f"[{index}/{len(channels)}] #{channel.name}: +{added} msgs · "
+            f"{at_target} authors at target · {len(counts)} seen"
+        )
         if _everyone_saturated(counts, floor_per_author, target_per_author):
+            progress("target reached for every author above the floor — stopping early")
             break
 
     merged = _merge(existing, _drop_thin_authors(fresh, counts, floor_per_author))
