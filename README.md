@@ -30,10 +30,30 @@ probabilities, so results are genuinely probabilistic.
 ## Quickstart
 
 ```sh
-uv sync                       # install
+uv sync                       # install core
 uv run pytest                 # run the tests
 uv run texthunt --help        # CLI
 ```
+
+### Export a corpus from Slack
+
+```sh
+uv sync --extra slack         # install the Slack client
+cp .env.example .env          # then put your SLACK_TOKEN in .env (never commit it)
+uv run texthunt export --out data/export --days 180 --windows 12 --max-per-author 200
+```
+
+The exporter samples **across time** (the range is split into windows) and **across people** (capped
+per author) to build a representative corpus, and paces requests (`--delay`, plus automatic backoff
+on HTTP 429) to stay under Slack's rate limits. Output lands in the directory the rest of the CLI
+reads.
+
+```sh
+uv run texthunt evaluate --data data/export --topic-aware
+uv run texthunt identify --data data/export "a snippet to attribute"
+```
+
+Engine B (LUAR style embeddings) is opt-in: `uv sync --extra embeddings`, then add `--engine luar`.
 
 ## Privacy
 

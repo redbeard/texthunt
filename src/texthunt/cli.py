@@ -1,21 +1,27 @@
 """Command-line entry point for Texthunt.
 
-Two subcommands over a Slack export directory:
+Subcommands:
 
+- ``export`` — pull a balanced, rate-limit-friendly sample of Slack history to disk.
 - ``evaluate`` — honest open-set metrics on held-out authors and (optionally) held-out channels.
 - ``identify`` — train on the whole corpus, then attribute a snippet with calibrated probabilities.
 """
 
 import argparse
+import time
 from collections.abc import Callable
 from pathlib import Path
 
 from texthunt import __version__
+from texthunt.config import load_settings
 from texthunt.engine import Engine
 from texthunt.evaluate import author_disjoint_split, evaluate_engine, topic_aware_split
 from texthunt.features import build_stylometric_engine
 from texthunt.pipeline import DEFAULT_MIN_CHARS, load_blocks, train_identifier
+from texthunt.slack_export import Throttle, build_slack_client, export
 from texthunt.verify import Verdict
+
+SECONDS_PER_DAY = 86_400
 
 
 def _engine_factory(name: str) -> Callable[[], Engine]:
@@ -33,6 +39,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--version", action="version", version=f"texthunt {__version__}")
     subcommands = parser.add_subparsers(dest="command")
+
+    export_cmd = subcommands.add_parser("export", help="sample Slack history to disk")
+    export_cmd.add_argument("--out", type=Path, default=Path("data/export"))
+    export_cmd.add_argument("--days", type=int, default=180, help="how far back to sample")
+    export_cmd.add_argument("--windows", type=int, default=12, help="time windows across the range")
+    export_cmd.add_argument("--max-per-author", type=int, default=200)
+    export_cmd.add_argument("--max-per-window", type=int, default=1000)
+    export_cmd.add_argument(
+        "--delay",
+        type=float,
+        default=1.2,
+        help="seconds between API calls, to stay under rate limits",
+    )
+    export_cmd.set_defaults(run=_run_export)
 
     evaluate = subcommands.add_parser("evaluate", help="measure open-set accuracy on a corpus")
     _add_corpus_options(evaluate)
@@ -70,6 +90,29 @@ def main(argv: list[str] | None = None) -> int:
         parser.print_help()
         return 0
     return args.run(args)
+
+
+def _run_export(args: argparse.Namespace) -> int:
+    token = load_settings().slack_token.get_secret_value()
+    client = build_slack_client(token)
+    now = time.time()
+    summary = export(
+        client,
+        args.out,
+        start=now - args.days * SECONDS_PER_DAY,
+        end=now,
+        n_windows=args.windows,
+        max_per_author=args.max_per_author,
+        max_messages_per_window=args.max_per_window,
+        throttle=_sleeper(args.delay),
+    )
+    print(f"exported {summary.n_messages} messages")
+    print(f"from {summary.n_authors} authors across {summary.n_channels} channels -> {args.out}")
+    return 0
+
+
+def _sleeper(delay: float) -> Throttle:
+    return (lambda: time.sleep(delay)) if delay > 0 else (lambda: None)
 
 
 def _run_evaluate(args: argparse.Namespace) -> int:

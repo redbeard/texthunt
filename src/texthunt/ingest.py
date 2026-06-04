@@ -24,9 +24,18 @@ def load_messages(export_dir: Path) -> list[Message]:
     return messages
 
 
+def is_human_message(raw: dict) -> bool:
+    """True for a real person's message — not a bot post or a system event (join, topic change…)."""
+    return (
+        raw.get("type") == "message"
+        and "subtype" not in raw
+        and bool(raw.get("user"))
+        and bool(raw.get("text", "").strip())
+    )
+
+
 def _to_message(raw: dict, channel: str) -> Message | None:
-    is_human = raw.get("type") == "message" and "subtype" not in raw
-    if not is_human or not raw.get("user") or not raw.get("text", "").strip():
+    if not is_human_message(raw):
         return None
     return Message(
         author_id=raw["user"],

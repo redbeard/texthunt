@@ -21,6 +21,10 @@ embeddings = [
     "torch>=2.2",
     "transformers>=4.40",
 ]
+# Slack export. Install with `uv sync --extra slack`.
+slack = [
+    "slack-sdk>=3.27",
+]
 
 [project.scripts]
 texthunt = "texthunt.cli:main"

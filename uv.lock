@@ -1257,6 +1257,15 @@ wheels = [
 ]
 
 [[package]]
+name = "slack-sdk"
+version = "3.42.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/0e/00/16258bfa547559b2c936b50c882b4f0a36ebf6b69639eb763d8fa5e8d6cb/slack_sdk-3.42.0.tar.gz", hash = "sha256:873db9e1f632ac650ffdbf9d8ba825f3e9e7e576a1e4f9604ccb2a15b3727e3d", size = 252136, upload-time = "2026-05-18T17:50:44.727Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ce/ef/8a1556bd4843443993fc116783790a7cc553601a37f7d965ec26eef95e76/slack_sdk-3.42.0-py2.py3-none-any.whl", hash = "sha256:eb39aff97e476e10cc5a8ac29bd2e79a9959e880d9fe0c03b4e8f05b2ac996ff", size = 315469, upload-time = "2026-05-18T17:50:41.972Z" },
+]
+
+[[package]]
 name = "sympy"
 version = "1.14.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1285,6 +1294,9 @@ embeddings = [
     { name = "torch" },
     { name = "transformers" },
 ]
+slack = [
+    { name = "slack-sdk" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -1300,10 +1312,11 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.13.4" },
     { name = "pydantic-settings", specifier = ">=2.14.1" },
     { name = "scikit-learn", specifier = ">=1.9.0" },
+    { name = "slack-sdk", marker = "extra == 'slack'", specifier = ">=3.27" },
     { name = "torch", marker = "extra == 'embeddings'", specifier = ">=2.2" },
     { name = "transformers", marker = "extra == 'embeddings'", specifier = ">=4.40" },
 ]
-provides-extras = ["embeddings"]
+provides-extras = ["embeddings", "slack"]
 
 [package.metadata.requires-dev]
 dev = [
