@@ -20,6 +20,7 @@ dependencies = [
 embeddings = [
     "torch>=2.2",
     "transformers>=4.40",
+    "einops>=0.7",  # required by LUAR's remote modeling code
 ]
 # Slack export. Install with `uv sync --extra slack`.
 slack = [
