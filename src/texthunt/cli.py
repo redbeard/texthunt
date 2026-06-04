@@ -7,13 +7,23 @@ Two subcommands over a Slack export directory:
 """
 
 import argparse
+from collections.abc import Callable
 from pathlib import Path
 
 from texthunt import __version__
+from texthunt.engine import Engine
 from texthunt.evaluate import author_disjoint_split, evaluate_engine, topic_aware_split
 from texthunt.features import build_stylometric_engine
 from texthunt.pipeline import DEFAULT_MIN_CHARS, load_blocks, train_identifier
 from texthunt.verify import Verdict
+
+
+def _engine_factory(name: str) -> Callable[[], Engine]:
+    if name == "luar":
+        from texthunt.embeddings import build_luar_engine
+
+        return build_luar_engine
+    return build_stylometric_engine
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -45,6 +55,12 @@ def _add_corpus_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--data", type=Path, required=True, help="path to a Slack export directory")
     parser.add_argument("--min-chars", type=int, default=DEFAULT_MIN_CHARS)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--engine",
+        choices=("stylometry", "luar"),
+        default="stylometry",
+        help="scoring engine: classical stylometry or LUAR style embeddings",
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -63,7 +79,7 @@ def _run_evaluate(args: argparse.Namespace) -> int:
         if args.topic_aware
         else author_disjoint_split(blocks, unknown_fraction=0.3, query_fraction=0.5, seed=args.seed)
     )
-    report = evaluate_engine(split, build_stylometric_engine)
+    report = evaluate_engine(split, _engine_factory(args.engine))
     print(f"known authors:      {report.n_known_authors}")
     print(f"queries:            {report.n_queries}")
     print(f"top-1 accuracy:     {report.top1_accuracy:.1%}  (random {report.random_baseline:.1%})")
@@ -76,7 +92,7 @@ def _run_evaluate(args: argparse.Namespace) -> int:
 
 def _run_identify(args: argparse.Namespace) -> int:
     blocks = load_blocks(args.data, args.min_chars)
-    identifier = train_identifier(blocks, build_stylometric_engine, seed=args.seed)
+    identifier = train_identifier(blocks, _engine_factory(args.engine), seed=args.seed)
     _print_verdict(identifier.identify(args.text))
     return 0
 

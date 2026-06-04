@@ -14,6 +14,13 @@ dependencies = [
     "scikit-learn>=1.9.0",
 ]
 
+[project.optional-dependencies]
+# Engine B (LUAR). Heavy; install with `uv sync --extra embeddings`.
+embeddings = [
+    "torch>=2.2",
+    "transformers>=4.40",
+]
+
 [project.scripts]
 texthunt = "texthunt.cli:main"
 
@@ -37,7 +44,8 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra"
+addopts = "-ra -m 'not slow'"
+markers = ["slow: needs network/model downloads; deselected by default"]
 
 [tool.ty.environment]
 python-version = "3.11"
