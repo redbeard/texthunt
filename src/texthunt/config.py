@@ -4,14 +4,16 @@ Secrets come from the environment or a gitignored ``.env`` file — never from s
 is held as a :class:`~pydantic.SecretStr` so it stays out of logs, reprs, and tracebacks.
 """
 
-from pydantic import SecretStr
+from pydantic import AliasChoices, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    slack_token: SecretStr
+    slack_token: SecretStr = Field(
+        validation_alias=AliasChoices("slack_token", "slack_oauth_token")
+    )
 
 
 def load_settings() -> Settings:

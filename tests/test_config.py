@@ -9,6 +9,13 @@ def test_reads_slack_token_from_environment(monkeypatch):
     assert load_settings().slack_token.get_secret_value() == "xoxp-secret"
 
 
+def test_also_accepts_the_slack_oauth_token_name(monkeypatch):
+    monkeypatch.delenv("SLACK_TOKEN", raising=False)
+    monkeypatch.setenv("SLACK_OAUTH_TOKEN", "xoxp-aliased")
+
+    assert load_settings().slack_token.get_secret_value() == "xoxp-aliased"
+
+
 def test_missing_token_raises_a_clear_error(monkeypatch, tmp_path):
     monkeypatch.delenv("SLACK_TOKEN", raising=False)
     monkeypatch.chdir(tmp_path)  # no .env here, so the loader has nothing to fall back on
