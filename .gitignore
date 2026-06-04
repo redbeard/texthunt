@@ -9,6 +9,9 @@ wheels/
 # Virtual environments
 .venv
 
+# Secrets — local only, never commit (the .example template is fine to track)
+.env
+
 # Data — personal Slack messages, never commit
 data/
 
