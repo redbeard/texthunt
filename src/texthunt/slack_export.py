@@ -29,6 +29,7 @@ Throttle = Callable[[], None]
 class Channel:
     id: str
     name: str
+    is_member: bool = True  # history is only readable for channels the token has joined
 
 
 @dataclass(frozen=True)
@@ -42,6 +43,7 @@ class ExportSummary:
     n_channels: int
     n_messages: int
     n_authors: int
+    n_skipped: int = 0
 
 
 class SlackClient(Protocol):
@@ -80,30 +82,58 @@ def export(
     max_per_author: int,
     max_messages_per_window: int,
     throttle: Throttle,
+    channel_names: Sequence[str] | None = None,
+    max_channels: int | None = None,
 ) -> ExportSummary:
     windows = time_windows(start, end, n_windows)
-    channels = _paginate(lambda cursor: client.list_channels(cursor), throttle, max_items=None)
+    channels = _select_channels(client, throttle, channel_names, max_channels)
 
     by_channel: dict[str, list[dict]] = {}
+    skipped = 0
     for channel in channels:
-        raw = [
-            message
-            for oldest, latest in windows
-            for message in _paginate(
-                lambda cursor, o=oldest, latest_=latest, c=channel: client.history(
-                    c.id, o, latest_, cursor
-                ),
-                throttle,
-                max_items=max_messages_per_window,
-            )
-        ]
-        human = [m for m in raw if is_human_message(m)]
-        balanced = balance_by_author(human, max_per_author)
+        try:
+            raw = _channel_history(client, channel, windows, throttle, max_messages_per_window)
+        except Exception:  # an unreadable channel (archived, restricted) shouldn't end the run
+            skipped += 1
+            continue
+        balanced = balance_by_author([m for m in raw if is_human_message(m)], max_per_author)
         if balanced:
             by_channel[channel.name] = balanced
 
     _write(out_dir, by_channel)
-    return _summarise(by_channel)
+    return _summarise(by_channel, skipped)
+
+
+def _channel_history(
+    client: SlackClient,
+    channel: Channel,
+    windows: Sequence[tuple[float, float]],
+    throttle: Throttle,
+    max_messages_per_window: int,
+) -> list[dict]:
+    return [
+        message
+        for oldest, latest in windows
+        for message in _paginate(
+            lambda cursor, o=oldest, latest_=latest: client.history(channel.id, o, latest_, cursor),
+            throttle,
+            max_items=max_messages_per_window,
+        )
+    ]
+
+
+def _select_channels(
+    client: SlackClient,
+    throttle: Throttle,
+    channel_names: Sequence[str] | None,
+    max_channels: int | None,
+) -> list[Channel]:
+    channels = _paginate(lambda cursor: client.list_channels(cursor), throttle, max_items=None)
+    if channel_names is not None:
+        wanted = set(channel_names)
+        channels = [c for c in channels if c.name in wanted]
+    readable = [c for c in channels if c.is_member]  # history needs membership
+    return readable if max_channels is None else readable[:max_channels]
 
 
 def _paginate(
@@ -129,12 +159,13 @@ def _write(out_dir: Path, by_channel: dict[str, list[dict]]) -> None:
         (channel_dir / "export.json").write_text(json.dumps(messages, indent=2))
 
 
-def _summarise(by_channel: dict[str, list[dict]]) -> ExportSummary:
+def _summarise(by_channel: dict[str, list[dict]], skipped: int) -> ExportSummary:
     messages = [m for channel in by_channel.values() for m in channel]
     return ExportSummary(
         n_channels=len(by_channel),
         n_messages=len(messages),
         n_authors=len({m["user"] for m in messages}),
+        n_skipped=skipped,
     )
 
 
@@ -158,7 +189,10 @@ class _WebApiClient:
         response = self._web.conversations_list(
             types="public_channel,private_channel", limit=200, cursor=cursor or None
         )
-        channels = [Channel(c["id"], c["name"]) for c in response["channels"]]
+        channels = [
+            Channel(c["id"], c["name"], is_member=c.get("is_member", False))
+            for c in response["channels"]
+        ]
         return Page(channels, response["response_metadata"].get("next_cursor") or None)
 
     def history(self, channel_id: str, oldest: float, latest: float, cursor: str | None) -> Page:

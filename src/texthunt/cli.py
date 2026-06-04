@@ -47,6 +47,12 @@ def build_parser() -> argparse.ArgumentParser:
     export_cmd.add_argument("--max-per-author", type=int, default=200)
     export_cmd.add_argument("--max-per-window", type=int, default=1000)
     export_cmd.add_argument(
+        "--channels", nargs="*", help="restrict to these channel names (default: all visible)"
+    )
+    export_cmd.add_argument(
+        "--max-channels", type=int, help="cap how many channels are scanned (a safety limit)"
+    )
+    export_cmd.add_argument(
         "--delay",
         type=float,
         default=1.2,
@@ -105,9 +111,13 @@ def _run_export(args: argparse.Namespace) -> int:
         max_per_author=args.max_per_author,
         max_messages_per_window=args.max_per_window,
         throttle=_sleeper(args.delay),
+        channel_names=args.channels,
+        max_channels=args.max_channels,
     )
     print(f"exported {summary.n_messages} messages")
     print(f"from {summary.n_authors} authors across {summary.n_channels} channels -> {args.out}")
+    if summary.n_skipped:
+        print(f"skipped {summary.n_skipped} unreadable channels")
     return 0
 
 

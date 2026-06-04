@@ -94,6 +94,93 @@ def test_export_caps_messages_per_author(tmp_path: Path):
     assert sum(m.author_id == "u1" for m in messages) == 2
 
 
+def test_export_can_restrict_to_named_channels(tmp_path: Path):
+    client = _fake_client()
+
+    export(
+        client,
+        tmp_path,
+        start=0.0,
+        end=100.0,
+        n_windows=2,
+        max_per_author=10,
+        max_messages_per_window=100,
+        throttle=lambda: None,
+        channel_names=["general"],
+    )
+
+    assert (tmp_path / "general").exists()
+    assert not (tmp_path / "random").exists()
+
+
+def test_export_caps_the_number_of_channels_scanned(tmp_path: Path):
+    client = _fake_client()
+
+    summary = export(
+        client,
+        tmp_path,
+        start=0.0,
+        end=100.0,
+        n_windows=2,
+        max_per_author=10,
+        max_messages_per_window=100,
+        throttle=lambda: None,
+        max_channels=1,
+    )
+
+    assert summary.n_channels == 1
+    assert {channel for channel, *_ in client.history_queries} == {"C1"}
+
+
+def test_export_ignores_channels_the_token_has_not_joined(tmp_path: Path):
+    client = FakeSlackClient(
+        channels=[Channel("C1", "joined"), Channel("C2", "not-joined", is_member=False)],
+        messages={"C1": [_message("u1", 10)], "C2": [_message("u9", 10)]},
+    )
+
+    export(
+        client,
+        tmp_path,
+        start=0.0,
+        end=100.0,
+        n_windows=1,
+        max_per_author=10,
+        max_messages_per_window=100,
+        throttle=lambda: None,
+    )
+
+    assert client.history_queries == [("C1", 0.0, 100.0)]  # C2 never queried
+
+
+class _FlakyClient(FakeSlackClient):
+    def history(self, channel_id, oldest, latest, cursor):
+        if channel_id == "C2":
+            raise RuntimeError("not_in_channel")
+        return super().history(channel_id, oldest, latest, cursor)
+
+
+def test_export_skips_channels_that_error_without_aborting(tmp_path: Path):
+    client = _FlakyClient(
+        channels=[Channel("C1", "good"), Channel("C2", "broken")],
+        messages={"C1": [_message("u1", 10)], "C2": [_message("u9", 10)]},
+    )
+
+    summary = export(
+        client,
+        tmp_path,
+        start=0.0,
+        end=100.0,
+        n_windows=1,
+        max_per_author=10,
+        max_messages_per_window=100,
+        throttle=lambda: None,
+    )
+
+    assert summary.n_skipped == 1
+    assert (tmp_path / "good").exists()
+    assert not (tmp_path / "broken").exists()
+
+
 def test_export_queries_every_window_and_throttles_between_calls(tmp_path: Path):
     calls: list[int] = []
     client = _fake_client()
